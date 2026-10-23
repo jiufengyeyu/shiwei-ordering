@@ -4,3 +4,19 @@
 *.class
 *Test.java
 **/test/
+jmeter.log
+*.log
+
+# local test artifacts
+stress-test/.tokens.tsv
+stress-test/.user_token.txt
+stress-test/.admin_token.txt
+stress-test/.token2000.txt
+stress-test/.receive_results.txt
+stress-test/.submit_r1.txt
+stress-test/.submit_r2.txt
+stress-test/.build.log
+stress-test/*.jtl
+
+# assistant workspace
+.workbuddy/
