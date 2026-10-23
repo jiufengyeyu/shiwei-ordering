@@ -96,6 +96,20 @@
             <artifactId>spring-boot-starter-cache</artifactId>
         </dependency>
 
+        <!-- 二次开发任务1：Caffeine 本地缓存（L1） -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>2.9.3</version>
+        </dependency>
+
+        <!-- 二次开发任务1：Guava 布隆过滤器（防缓存穿透） -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>31.1-jre</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
