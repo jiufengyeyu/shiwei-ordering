@@ -97,6 +97,31 @@
             <artifactId>spring-boot-starter-amqp</artifactId>
         </dependency>
 
+        <!-- 二次开发任务3：Redisson 分布式锁（防重复下单） -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+            <version>3.30.0</version>
+            <exclusions>
+                <!-- 排除连带引入的 actuator：其 PathPattern 端点映射与 springfox 3.0.0 不兼容（启动 NPE），且本项目不需要 -->
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-actuator</artifactId>
+                </exclusion>
+                <!-- 排除默认的 spring-data-32 适配模块（配 Boot 3.2），本项目是 Spring Data 2.7.x -->
+                <exclusion>
+                    <groupId>org.redisson</groupId>
+                    <artifactId>redisson-spring-data-32</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- 显式匹配 Spring Data 2.7.x 的 Redisson 适配模块 -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-data-27</artifactId>
+            <version>3.30.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-cache</artifactId>

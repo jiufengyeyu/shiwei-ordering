@@ -23,13 +23,18 @@ import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
 import com.sky.vo.OrderVO;
 import com.sky.websocket.WebSocketServer;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.CollectionUtils;
 
 import java.math.BigDecimal;
@@ -39,6 +44,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.concurrent.TimeUnit;
 
 @Service
 @Slf4j
@@ -60,6 +66,8 @@ public class OrderServiceImpl implements OrderService {
     private WebSocketServer webSocketServer;
     @Autowired
     private RabbitTemplate rabbitTemplate;
+    @Autowired
+    private RedissonClient redissonClient;
 
 
     /**
@@ -69,7 +77,48 @@ public class OrderServiceImpl implements OrderService {
      */
     @Transactional
     public OrderSubmitVO submitOrder(OrdersSubmitDTO ordersSubmitDTO) {
+        Long userId = BaseContext.getCurrentId();
 
+        //二次开发任务3-①：Redisson 分布式锁防重复下单
+        //同一用户同一时刻只允许一个下单请求进入；tryLock 等待 0 秒，重复点击的第二连击立即被拦截
+        RLock lock = redissonClient.getLock("lock:order:submit:" + userId);
+        boolean acquired = false;
+        try {
+            acquired = lock.tryLock(0, TimeUnit.SECONDS); // 未指定 leaseTime，启用看门狗自动续期
+            if (!acquired) {
+                throw new OrderBusinessException("订单正在提交中，请勿重复点击");
+            }
+            return doSubmitOrder(ordersSubmitDTO, userId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new OrderBusinessException("订单提交被中断，请重试");
+        } finally {
+            if (acquired) {
+                //关键细节：锁必须在事务提交/回滚之后才释放（锁边界 vs 事务边界）
+                //若在事务提交前解锁，下一个请求可能在上一事务提交前抢到锁、读到未提交的旧数据
+                if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                        @Override
+                        public void afterCompletion(int status) {
+                            if (lock.isHeldByCurrentThread()) {
+                                lock.unlock();
+                            }
+                        }
+                    });
+                } else {
+                    lock.unlock();
+                }
+            }
+        }
+    }
+
+    /**
+     * 实际下单逻辑（原 submitOrder 方法体，二次开发任务3 抽出）
+     * @param ordersSubmitDTO
+     * @param userId
+     * @return
+     */
+    private OrderSubmitVO doSubmitOrder(OrdersSubmitDTO ordersSubmitDTO, Long userId) {
         //1. 处理各种业务异常（地址簿为空、购物车数据为空）
         AddressBook addressBook = addressBookMapper.getById(ordersSubmitDTO.getAddressBookId());
         if(addressBook == null){
@@ -81,7 +130,6 @@ public class OrderServiceImpl implements OrderService {
         //checkOutOfRange(addressBook.getCityName() + addressBook.getDistrictName() + addressBook.getDetail());
 
         //查询当前用户的购物车数据
-        Long userId = BaseContext.getCurrentId();
 
         ShoppingCart shoppingCart = new ShoppingCart();
         shoppingCart.setUserId(userId);
@@ -98,13 +146,19 @@ public class OrderServiceImpl implements OrderService {
         orders.setOrderTime(LocalDateTime.now());
         orders.setPayStatus(Orders.UN_PAID);
         orders.setStatus(Orders.PENDING_PAYMENT);
-        orders.setNumber(String.valueOf(System.currentTimeMillis()));
+        //二次开发任务3-②：订单号 = 时间戳 + 用户id后4位，避免跨用户同毫秒碰撞；配合 uk_number 唯一索引做数据库层兜底
+        orders.setNumber(String.format("%d%04d", System.currentTimeMillis(), userId % 10000));
         orders.setAddress(addressBook.getDetail());
         orders.setPhone(addressBook.getPhone());
         orders.setConsignee(addressBook.getConsignee());
         orders.setUserId(userId);
 
-        orderMapper.insert(orders);
+        try {
+            orderMapper.insert(orders);
+        } catch (DuplicateKeyException e) {
+            //二次开发任务3-③：唯一索引兜底——分布式锁失效等极端场景下，数据库层拦截重复订单
+            throw new OrderBusinessException("请勿重复提交订单");
+        }
 
         //二次开发任务2：下单成功即投递 15 分钟延迟消息，替代定时任务轮询关单
         rabbitTemplate.convertAndSend(RabbitMQConfig.DELAY_EXCHANGE, RabbitMQConfig.DELAY_ROUTING_KEY,
@@ -241,6 +295,20 @@ public class OrderServiceImpl implements OrderService {
 
         // 根据订单号查询当前用户的订单
         Orders ordersDB = orderMapper.getByNumberAndUserId(outTradeNo, userId);
+
+        //二次开发任务3-④：支付幂等 + 状态机校验
+        if (ordersDB == null) {
+            throw new OrderBusinessException("订单不存在");
+        }
+        if (Orders.PAID.equals(ordersDB.getPayStatus())) {
+            // 已支付：重复的支付回调/重复请求，幂等处理直接返回
+            log.info("重复支付请求，幂等处理直接返回，orderNumber={}", outTradeNo);
+            return;
+        }
+        if (!Orders.PENDING_PAYMENT.equals(ordersDB.getStatus())) {
+            // 已取消/已完成等状态的订单不允许支付（防止支付回调把超时取消的订单"复活"）
+            throw new OrderBusinessException("订单状态异常，无法完成支付");
+        }
 
         // 根据订单id更新订单的状态、支付方式、支付状态、结账时间
         Orders orders = Orders.builder()
