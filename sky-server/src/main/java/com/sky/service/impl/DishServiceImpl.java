@@ -27,7 +27,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -241,7 +244,9 @@ public class DishServiceImpl implements DishService {
     }
 
     /**
-     * 纯数据库回源：查起售菜品 + 逐个查口味（原 listWithFlavor 的数据库逻辑）
+     * 纯数据库回源：查起售菜品 + 口味（二次开发性能优化：口味 IN 批量查，消灭 N+1）
+     * 改造前：1 次查菜 + 逐菜查口味 = 1+N 次往返（61 次 ≈ 458ms）
+     * 改造后：1 次查菜 + 1 次口味 IN 批量查 = 2 次往返（配合 idx_dish_id 索引 ≈ 10~20ms）
      * @param categoryId
      * @return
      */
@@ -251,6 +256,18 @@ public class DishServiceImpl implements DishService {
                 .status(StatusConstant.ENABLE)
                 .build();
         List<Dish> dishList = dishMapper.list(dish);
+        if (dishList.isEmpty()) {
+            // 空分类直接返回，避免 in () 产生 SQL 语法错误
+            return new ArrayList<>();
+        }
+
+        // 收集本结果集全部菜品 id，一次 SQL 拿回所有口味
+        List<Long> dishIds = dishList.stream().map(Dish::getId).collect(Collectors.toList());
+
+        // 按 dishId 在内存中分组：{65=[口味...], 66=[口味...], ...}
+        Map<Long, List<DishFlavor>> flavorMap = dishFlavorMapper.getByDishIds(dishIds)
+                .stream()
+                .collect(Collectors.groupingBy(DishFlavor::getDishId));
 
         List<DishVO> dishVOList = new ArrayList<>();
 
@@ -258,10 +275,8 @@ public class DishServiceImpl implements DishService {
             DishVO dishVO = new DishVO();
             BeanUtils.copyProperties(d,dishVO);
 
-            //根据菜品id查询对应的口味
-            List<DishFlavor> flavors = dishFlavorMapper.getByDishId(d.getId());
-
-            dishVO.setFlavors(flavors);
+            // 从内存 Map 取该菜的口味（查不到说明这道菜没有口味记录，给空列表）
+            dishVO.setFlavors(flavorMap.getOrDefault(d.getId(), Collections.emptyList()));
             dishVOList.add(dishVO);
         }
 

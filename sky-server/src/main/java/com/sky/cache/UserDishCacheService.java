@@ -3,6 +3,7 @@ package com.sky.cache;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sky.exception.BaseException;
 import com.sky.vo.DishVO;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -106,20 +107,24 @@ public class UserDishCacheService {
                 stringRedisTemplate.delete(lockKey);
             }
         } else {
-            // 没抢到锁：稍等后重读 L2（其他线程正在重建）
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return loader.get();
+            // 没抢到锁：循环重读 L2，等持锁线程重建完成（最多等 500ms，每 100ms 探测一次）
+            for (int i = 0; i < 5; i++) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                l2 = stringRedisTemplate.opsForValue().get(key);
+                if (l2 != null) {
+                    localCache.put(key, l2);
+                    return deserialize(l2);
+                }
             }
-            l2 = stringRedisTemplate.opsForValue().get(key);
-            if (l2 != null) {
-                localCache.put(key, l2);
-                return deserialize(l2);
-            }
-            // 降级：锁等待后仍无数据，直接回源（宁可短暂压库，也不返回空数据）
-            return loader.get();
+            // 等 500ms 仍无数据：说明回源异常地慢（数据库大概率已出问题）。
+            // 绝不绕过互斥锁自己去查库——那会制造第二个回源入口，成批线程压垮数据库。
+            // 快速失败：个别用户看到"繁忙"提示重试即可恢复，好过无保护查库引发击穿。
+            throw new BaseException("系统繁忙，请稍后再试");
         }
     }
 
