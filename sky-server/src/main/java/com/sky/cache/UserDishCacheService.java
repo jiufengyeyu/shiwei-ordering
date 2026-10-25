@@ -42,8 +42,13 @@ public class UserDishCacheService {
     /** 互斥锁 key 前缀 */
     private static final String LOCK_KEY_PREFIX = "lock:userDish:";
 
-    /** L1 本地缓存：存 JSON 字符串，30 秒过期，最多 200 个分类（内存友好） */
-    private final Cache<String, String> localCache = Caffeine.newBuilder()
+    /**
+     * L1 本地缓存：直接存活对象（List&lt;DishVO&gt;），30 秒过期，最多 200 个分类。
+     * 性能优化（2026-10-25）：早期版本存 JSON 字符串，命中后每请求都要 Jackson 解析 50KB 再序列化回去；
+     * 改为存活对象后命中路径零解析零分配（与 Spring Cache CaffeineCacheManager 语义一致）。
+     * 约定：调用方对返回的 List 只读不修改（缓存对象被所有线程共享）。
+     */
+    private final Cache<String, List<DishVO>> localCache = Caffeine.newBuilder()
             .expireAfterWrite(30, TimeUnit.SECONDS)
             .maximumSize(200)
             .build();
@@ -63,26 +68,27 @@ public class UserDishCacheService {
     public List<DishVO> listWithCache(Long categoryId, Supplier<List<DishVO>> loader) {
         String key = L2_KEY_PREFIX + categoryId;
 
-        // 1. L1 本地缓存：无网络开销，纳秒级
-        String l1 = localCache.getIfPresent(key);
+        // 1. L1 本地缓存：无网络开销，纳秒级，命中零解析
+        List<DishVO> l1 = localCache.getIfPresent(key);
         if (l1 != null) {
-            return deserialize(l1);
+            return l1;
         }
 
-        // 2. L2 Redis：一次网络往返
+        // 2. L2 Redis：一次网络往返，解析一次后以对象形式回填 L1
         String l2 = stringRedisTemplate.opsForValue().get(key);
         if (l2 != null) {
-            localCache.put(key, l2);
-            return deserialize(l2);
+            List<DishVO> obj = deserialize(l2);
+            localCache.put(key, obj);
+            return obj;
         }
 
         // 3. 布隆过滤器防穿透：一定不存在的分类 id 直接返回空列表，并缓存空值 60s
         if (!categoryBloomFilter.mightContain(categoryId)) {
             log.debug("布隆过滤器拦截不存在的分类 id: {}", categoryId);
-            String empty = serialize(Collections.emptyList());
+            List<DishVO> empty = Collections.emptyList();
             localCache.put(key, empty);
-            stringRedisTemplate.opsForValue().set(key, empty, Duration.ofSeconds(60));
-            return Collections.emptyList();
+            stringRedisTemplate.opsForValue().set(key, serialize(empty), Duration.ofSeconds(60));
+            return empty;
         }
 
         // 4. 互斥锁防击穿：只放一个线程回源数据库
@@ -93,15 +99,15 @@ public class UserDishCacheService {
                 // 双重检查：拿锁期间可能别的线程已完成重建
                 l2 = stringRedisTemplate.opsForValue().get(key);
                 if (l2 != null) {
-                    localCache.put(key, l2);
-                    return deserialize(l2);
+                    List<DishVO> rebuilt = deserialize(l2);
+                    localCache.put(key, rebuilt);
+                    return rebuilt;
                 }
                 List<DishVO> result = loader.get();
-                String json = serialize(result);
-                // 5. 写 L2：TTL 30 分钟 + 随机 0~10 分钟（防雪崩）
+                // 5. 写 L2：TTL 30 分钟 + 随机 0~10 分钟（防雪崩）；L1 存对象
                 long ttlSeconds = TimeUnit.MINUTES.toSeconds(30) + ThreadLocalRandom.current().nextLong(600);
-                stringRedisTemplate.opsForValue().set(key, json, Duration.ofSeconds(ttlSeconds));
-                localCache.put(key, json);
+                stringRedisTemplate.opsForValue().set(key, serialize(result), Duration.ofSeconds(ttlSeconds));
+                localCache.put(key, result);
                 return result;
             } finally {
                 stringRedisTemplate.delete(lockKey);
@@ -117,8 +123,9 @@ public class UserDishCacheService {
                 }
                 l2 = stringRedisTemplate.opsForValue().get(key);
                 if (l2 != null) {
-                    localCache.put(key, l2);
-                    return deserialize(l2);
+                    List<DishVO> obj = deserialize(l2);
+                    localCache.put(key, obj);
+                    return obj;
                 }
             }
             // 等 500ms 仍无数据：说明回源异常地慢（数据库大概率已出问题）。
