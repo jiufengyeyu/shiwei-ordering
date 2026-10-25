@@ -1,5 +1,10 @@
 server:
   port: 8080
+  tomcat:
+    # 二次开发调优：Tomcat 默认值 100 会导致高吞吐下连接被频繁强制回收，
+    # 客户端临时端口在 TIME_WAIT 中堆积（~90s 耗尽 1.6 万端口池，BindException）。
+    # 1000 = 连接服务约 41 秒才回收，TIME_WAIT 稳态仅 ~2000，端口耗尽消失；仍保留回收保险语义
+    max-keep-alive-requests: 1000
 
 spring:
   profiles:
