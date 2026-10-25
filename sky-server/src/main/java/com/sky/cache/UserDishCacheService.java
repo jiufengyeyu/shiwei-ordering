@@ -10,12 +10,15 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -91,9 +94,11 @@ public class UserDishCacheService {
             return empty;
         }
 
-        // 4. 互斥锁防击穿：只放一个线程回源数据库
+        // 4. 互斥锁防击穿：只放一个线程回源数据库。
+        //    锁值用随机 UUID（替代固定 "1"）：释放时校验属主，防止线程 A 执行超时锁过期后误删线程 B 的锁
         String lockKey = LOCK_KEY_PREFIX + categoryId;
-        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, "1", Duration.ofSeconds(10));
+        String lockValue = UUID.randomUUID().toString();
+        Boolean locked = stringRedisTemplate.opsForValue().setIfAbsent(lockKey, lockValue, Duration.ofSeconds(10));
         if (Boolean.TRUE.equals(locked)) {
             try {
                 // 双重检查：拿锁期间可能别的线程已完成重建
@@ -110,7 +115,8 @@ public class UserDishCacheService {
                 localCache.put(key, result);
                 return result;
             } finally {
-                stringRedisTemplate.delete(lockKey);
+                // 释放锁前校验属主（Lua 保证"比对+删除"原子执行），只删自己加的锁
+                releaseLock(lockKey, lockValue);
             }
         } else {
             // 没抢到锁：循环重读 L2，等持锁线程重建完成（最多等 500ms，每 100ms 探测一次）
@@ -136,16 +142,28 @@ public class UserDishCacheService {
     }
 
     /**
-     * 管理端菜品增删改后调用：清空 L1 全部条目 + 删除 L2 全部 key
-     * （管理端写操作频率低，全清是最简单且保证一致性的策略）
+     * 管理端菜品增删改后按分类精准清理（替代早期 evictAll 全清）：
+     * 改哪个分类就清哪个分类的 L1 + L2，无关分类的缓存不受影响，避免不必要的回源。
+     * 换分类的菜品新旧两个分类都要清；批量删除收集去重后传入。
      */
-    public void evictAll() {
-        localCache.invalidateAll();
-        Set<String> keys = stringRedisTemplate.keys(L2_KEY_PREFIX + "*");
-        if (keys != null && !keys.isEmpty()) {
-            stringRedisTemplate.delete(keys);
+    public void evictCategory(Long... categoryIds) {
+        for (Long categoryId : categoryIds) {
+            if (categoryId == null) {
+                continue;
+            }
+            String key = L2_KEY_PREFIX + categoryId;
+            localCache.invalidate(key);
+            stringRedisTemplate.delete(key);
         }
-        log.info("用户端菜品多级缓存已全量清理（L1 + L2 共 {} 个 key）", keys == null ? 0 : keys.size());
+        log.info("用户端菜品缓存已按分类精准清理: {}", Arrays.toString(categoryIds));
+    }
+
+    /** 释放锁：Lua 保证"比对属主 + 删除"原子执行，避免误删他人的锁 */
+    private void releaseLock(String lockKey, String lockValue) {
+        DefaultRedisScript<Long> script = new DefaultRedisScript<>(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                Long.class);
+        stringRedisTemplate.execute(script, Collections.singletonList(lockKey), lockValue);
     }
 
     private String serialize(List<DishVO> list) {

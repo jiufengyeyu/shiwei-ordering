@@ -28,8 +28,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -75,8 +77,8 @@ public class DishServiceImpl implements DishService {
             dishFlavorMapper.insertBatch(flavors);
         }
 
-        //二次开发任务1：清理用户端多级缓存（原 Controller 上的 @CacheEvict 只能清理旧的单层 dishCache，覆盖不到新的 v2 key 和 L1 Caffeine）
-        userDishCacheService.evictAll();
+        //二次开发任务1：清理用户端多级缓存（精准清理：新增菜品只影响其所在分类）
+        userDishCacheService.evictCategory(dishDTO.getCategoryId());
     }
 
     /**
@@ -104,12 +106,15 @@ public class DishServiceImpl implements DishService {
     @CacheEvict(cacheManager = "caffeineCacheManager", cacheNames = "adminDishPage", allEntries = true)
     public void deleteBatch(List<Long> ids) {
         //判断当前菜品是否能够删除---是否存在起售中的菜品？？
+        Set<Long> categoryIds = new HashSet<>();
         for (Long id : ids) {
             Dish dish = dishMapper.getById(id);
             if (dish.getStatus() == StatusConstant.ENABLE) {
                 //当前菜品处于起售中，不能删除
                 throw new DeletionNotAllowedException(MessageConstant.DISH_ON_SALE);
             }
+            //收集受影响分类（精准清理缓存用）
+            categoryIds.add(dish.getCategoryId());
         }
 
         //判断当前菜品是否能够删除---是否被套餐关联了？？
@@ -126,8 +131,8 @@ public class DishServiceImpl implements DishService {
             dishFlavorMapper.deleteByDishId(id);
         }
 
-        //二次开发任务1：清理用户端多级缓存
-        userDishCacheService.evictAll();
+        //二次开发任务1：清理用户端多级缓存（精准清理：批量删除只影响涉及分类）
+        userDishCacheService.evictCategory(categoryIds.toArray(new Long[0]));
     }
 
     /**
@@ -158,6 +163,8 @@ public class DishServiceImpl implements DishService {
      */
     @CacheEvict(cacheManager = "caffeineCacheManager", cacheNames = "adminDishPage", allEntries = true)
     public void updateWithFlavor(DishDTO dishDTO) {
+        //查询旧数据：菜品换分类时，新旧两个分类的缓存都要清理
+        Dish dishDB = dishMapper.getById(dishDTO.getId());
         Dish dish = new Dish();
         BeanUtils.copyProperties(dishDTO, dish);
 
@@ -177,8 +184,8 @@ public class DishServiceImpl implements DishService {
             dishFlavorMapper.insertBatch(flavors);
         }
 
-        //二次开发任务1：清理用户端多级缓存
-        userDishCacheService.evictAll();
+        //二次开发任务1：清理用户端多级缓存（精准清理：修改影响旧分类和新分类）
+        userDishCacheService.evictCategory(dishDB.getCategoryId(), dishDTO.getCategoryId());
     }
 
     /**
@@ -190,6 +197,8 @@ public class DishServiceImpl implements DishService {
     @Transactional
     @CacheEvict(cacheManager = "caffeineCacheManager", cacheNames = "adminDishPage", allEntries = true)
     public void startOrStop(Integer status, Long id) {
+        //查询旧数据获取分类 id（精准清理缓存用）
+        Dish dishDB = dishMapper.getById(id);
         Dish dish = Dish.builder()
                 .id(id)
                 .status(status)
@@ -213,8 +222,8 @@ public class DishServiceImpl implements DishService {
             }
         }
 
-        //二次开发任务1：清理用户端多级缓存
-        userDishCacheService.evictAll();
+        //二次开发任务1：清理用户端多级缓存（精准清理：起售停售只影响其所在分类）
+        userDishCacheService.evictCategory(dishDB.getCategoryId());
     }
 
     /**
