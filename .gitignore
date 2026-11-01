@@ -21,6 +21,12 @@ stress-test/*.jtl
 # assistant workspace
 .workbuddy/
 
+# 本地压测产物（JWT token / 图片清单）
+stress-test/.*.txt
+
+# 简历等生成物（含姓名、手机号等个人信息）
+output/
+
 # 本地私有配置（含数据库密码 / OSS / 微信支付密钥），模板见 application-dev.example.yml
 sky-server/src/main/resources/application-dev.yml
 sky-server/src/main/resources/application-*-local.yml
