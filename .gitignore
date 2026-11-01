@@ -20,3 +20,7 @@ stress-test/*.jtl
 
 # assistant workspace
 .workbuddy/
+
+# 本地私有配置（含数据库密码 / OSS / 微信支付密钥），模板见 application-dev.example.yml
+sky-server/src/main/resources/application-dev.yml
+sky-server/src/main/resources/application-*-local.yml

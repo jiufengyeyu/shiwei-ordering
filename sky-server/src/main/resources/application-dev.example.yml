@@ -1,0 +1,44 @@
+spring:
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    # 二次开发任务2：生产者确认（消息是否到达交换机/是否路由到队列）
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        # 消费者手动 ACK：处理成功才确认，异常不丢消息
+        acknowledge-mode: manual
+        # 每个消费者最大未确认消息数
+        prefetch: 1
+
+sky:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    host: localhost
+    port: 3306
+    database: sky_take_out
+    username: root
+    password: your_mysql_password
+  shop:
+    address: 北京市海淀区上地十街10号
+  baidu:
+    ak: your_baidu_map_ak
+  alioss:
+    endpoint: oss-cn-beijing.aliyuncs.com
+    access-key-id: your_oss_access_key_id
+    access-key-secret: your_oss_access_key_secret
+    bucket-name: your_bucket_name
+  redis:
+    host: localhost
+    port: 6379
+    password: your_redis_password
+    database: 0
+  wechat:
+    appid: your_wechat_appid
+    secret: your_wechat_secret
+  order:
+    # 二次开发任务2：订单超时未支付自动取消的延迟时长（毫秒），默认 15 分钟
+    delay-ttl: 900000
