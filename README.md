@@ -46,7 +46,6 @@ shiwei-ordering
 │       ├── mapper/       MyBatis 接口
 │       └── task/         定时任务（仅保留每日派送状态流转）
 ├── sql/                  建表脚本（含优惠券表、菜品测试数据）
-└── stress-test/          JMeter 压测计划、结果文件与统计脚本
 ```
 
 ## 技术选型
@@ -86,14 +85,7 @@ shiwei-ordering
 
 ## 压测
 
-`stress-test/` 提供 JMeter 压测计划（300 / 600 / 1000 并发阶梯）与结果统计脚本：
-
-```bash
-java -jar <jmeter>/bin/ApacheJMeter.jar -n -t stress-test/baseline-plan.jmx -l result.jtl
-python stress-test/stats.py result.jtl
-```
-
-600 并发、核心接口「菜品分页查询」三轮复测（方差 < 2%）：
+JMeter 三档阶梯压测（300 / 600 / 1000 并发）。核心接口「菜品分页查询」在 600 并发下三轮复测，方差小于 2%：
 
 | 指标 | 无缓存基线 | 多级缓存后 | 变化 |
 |---|---|---|---|
@@ -101,7 +93,9 @@ python stress-test/stats.py result.jtl
 | 平均响应 | 124 ms | 18 ms | **-85%** |
 | 登录接口 QPS（未优化，外溢受益） | 1,823 | 8,634 | 4.7 倍 |
 
-> 说明：登录接口本身未做任何改造，提速完全来自缓存释放出的数据库连接，属于旁证而非优化成果。
+> 登录接口本身未做任何改造，提速完全来自缓存释放出的数据库连接，属于旁证而非优化成果。
+>
+> 压测计划（`.jmx`）、统计脚本与原始结果（`.jtl`，累计数 GB）在本地执行与保存，未纳入版本库。
 
 ## 关于本项目
 

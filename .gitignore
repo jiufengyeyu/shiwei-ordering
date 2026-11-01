@@ -7,22 +7,11 @@
 jmeter.log
 *.log
 
-# local test artifacts
-stress-test/.tokens.tsv
-stress-test/.user_token.txt
-stress-test/.admin_token.txt
-stress-test/.token2000.txt
-stress-test/.receive_results.txt
-stress-test/.submit_r1.txt
-stress-test/.submit_r2.txt
-stress-test/.build.log
-stress-test/*.jtl
+# 压测材料一律不入库（JMeter 计划、统计脚本、原始结果 jtl、token 文件）
+stress-test/
 
-# assistant workspace
+# assistant workspace（含工作记忆，不得入库）
 .workbuddy/
-
-# 本地压测产物（JWT token / 图片清单）
-stress-test/.*.txt
 
 # 简历等生成物（含姓名、手机号等个人信息）
 output/
