@@ -10,6 +10,12 @@ jmeter.log
 # 压测材料一律不入库（JMeter 计划、统计脚本、原始结果 jtl、token 文件）
 stress-test/
 
+# 压测用菜品数据（仅本地准备数据用）
+sql/insert_dishes_500.sql
+
+# 内部资料：二次开发实录（面试备战手册，含简历表述）
+二次开发实录.md
+
 # assistant workspace（含工作记忆，不得入库）
 .workbuddy/
 
